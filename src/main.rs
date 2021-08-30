@@ -1,60 +1,199 @@
+use reqwest::header::{
+    HeaderMap, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CONNECTION, CONTENT_TYPE, REFERER,
+    UPGRADE_INSECURE_REQUESTS, USER_AGENT,
+};
 use serde::Deserialize;
-use std::{error::Error,env, io, marker::PhantomData};
-
+use soup::prelude::*;
+use std::{env, error::Error, io, marker::PhantomData, str::FromStr};
 fn main() -> Result<(), Box<dyn Error>> {
     let spotify_auth = Authorizer::<SpotifyAuthResponse>::from_env();
     let spotify_auth_response = spotify_auth.authorize();
-    let json_response=spotify_auth_response.query("https://api.spotify.com/v1/me/player/currently-playing").unwrap();
-    // match spotify_auth_response.query("https://api.spotify.com/v1/me/player/currently-playing"){
-    //     Ok(json_result) =>{   
-    //         println!("The currently playing track is: {} by {}",json_result["item"]["name"],json_result["item"]["artists"][0]["name"] );
-    //     },
-    //     Err(s) =>println!("{}",s),
-    // }
-    let song = &json_response["item"]["name"];
-    let artist = &json_response["item"]["artists"][0]["name"];
-    println!("The currently playing track is: {} by {}",song,artist);
-
 
     let genius_auth = Authorizer::<GeniusAuthResponse>::from_env();
     let genius_auth_response = genius_auth.authorize();
-    let query_url = reqwest::Url::parse_with_params(
-        "https://api.genius.com/search",
-        &[
-            ("q", format!("{} {}",song,artist)),
-    
-        ],
-    ).unwrap();
-    let json_response = match genius_auth_response.query(&query_url.to_string()){
-        Ok(json_result) =>{   
-            json_result
-        },
-        Err(s) =>panic!("{}",s),
-    };
 
-    let song =&json_response["response"]["hits"][0]["result"]["id"];
-    let lyric_path = &json_response["response"]["hits"][0]["result"]["path"];
+    // this cookie is super important. without it genius might return one of two different page layouts for the lyrics which makes scraping much harder. The page layout changes att the cookie value 50.
+    let mut cookie_jar = reqwest::cookie::Jar::default();
+    cookie_jar.add_cookie_str(
+        "_genius_ab_test_cohort=80",
+        &"https://genius.com".parse::<reqwest::Url>().unwrap(),
+    );
 
-    
-    
-    let query_url = reqwest::Url::parse_with_params(
-        &format!("https://api.genius.com/songs/{}",song),
-        &[
-            ("text_format", "plain"),
-    
-        ],
-    ).unwrap();
-    let json_response = match genius_auth_response.query(&query_url.to_string()){
-        Ok(json_result) =>{   
-            json_result
-        },
-        Err(s) =>panic!("{}",s),
-    };
+    let client = reqwest::blocking::Client::builder()
+        .cookie_provider(cookie_jar.into())
+        .build()
+        .unwrap();
+
+    println!("Ready for queries");
+    let mut buf = String::new();
+    let input = io::stdin();
+    loop {
+        println!("Hit enter to get lyrics");
+        input.read_line(&mut buf).unwrap();
+        match get_lyrics(&client, &spotify_auth_response, &genius_auth_response) {
+            Ok(lyrics) => println!("###########################\n{}\n", lyrics.trim_end()),
+            Err(_) => println!("Couldn't find lyrics"),
+        }
+    }
 
     Ok(())
 }
 
+fn get_lyrics(
+    client: &reqwest::blocking::Client,
+    spotify_auth: &SpotifyAuthResponse,
+    genius_auth: &GeniusAuthResponse,
+) -> Result<String, ()> {
+    let spotify_response = spotify_auth
+        .query("https://api.spotify.com/v1/me/player/currently-playing")
+        .unwrap();
 
+    let song = &spotify_response["item"]["name"];
+    let artist = &spotify_response["item"]["artists"][0]["name"];
+
+    #[cfg(feature = "debug")]
+    std::fs::write("response_spotify.json", &spotify_response.to_string())
+        .expect("lord we fucked up");
+
+    println!("The currently playing track is: {} by {}", song, artist);
+
+    let query_url = reqwest::Url::parse_with_params(
+        "https://api.genius.com/search",
+        &[("q", format!("{} {}", song, artist))],
+    )
+    .unwrap();
+
+    let genius_response = match genius_auth.query(&query_url.to_string()) {
+        Ok(json_result) => json_result,
+        Err(s) => panic!("{}", s),
+    };
+
+    #[cfg(feature = "debug")]
+    std::fs::write("response_genius.json", &genius_response.to_string())
+        .expect("lord we fucked up");
+
+    let song = &genius_response["response"]["hits"][0]["result"]["id"];
+    let lyric_path = &genius_response["response"]["hits"][0]["result"]["path"];
+
+    let query_url = reqwest::Url::from_str(&format!(
+        "https://genius.com{}",
+        lyric_path.as_str().unwrap()
+    ))
+    .unwrap();
+    println!("{}", &query_url);
+
+    let mut request = client
+        .get(query_url.clone())
+        .headers(construct_headers())
+        .build()
+        .unwrap();
+
+    #[cfg(feature = "debug")]
+    println!("############## Headers ###################\n{:?}", request);
+    let mut response = client.execute(request).unwrap();
+    //let mut response = client.get(query_url).send().unwrap();
+    //let mut response = reqwest::blocking::get(query_url).unwrap();
+
+    #[cfg(feature = "debug")]
+    println!(
+        "############# Response #############\n {:?}",
+        response.headers()
+    );
+
+    let res = response.text().unwrap();
+
+    //println!("\n\n{:#?}",response.text().unwrap());
+
+    #[cfg(feature = "debug")]
+    std::fs::write("response_final.html", &res.as_bytes()).expect("lord we fucked up");
+
+    //tag("div").attr("class", "lyrics")
+    let document = soup::Soup::new(res.as_str());
+    match document.tag("div").class("lyrics").find() {
+        Some(n) => return Ok(n.text()),
+        None => Err(()),
+    }
+}
+
+fn construct_headers() -> HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        reqwest::header::HeaderValue::from_static("reqwest"),
+    );
+    headers.insert(
+        ACCEPT,
+        reqwest::header::HeaderValue::from_static(
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        ),
+    );
+    headers.insert(
+        ACCEPT_LANGUAGE,
+        reqwest::header::HeaderValue::from_static("en-US,en;q=0.5"),
+    );
+    //headers.insert(ACCEPT_ENCODING, reqwest::header::HeaderValue::from_static("gzip, deflate, br"));
+    headers.insert(
+        REFERER,
+        reqwest::header::HeaderValue::from_static("Referer: https://genius.com/search/embed"),
+    );
+    headers.insert(
+        CONNECTION,
+        reqwest::header::HeaderValue::from_static("keep-alive"),
+    );
+    headers.insert(
+        UPGRADE_INSECURE_REQUESTS,
+        reqwest::header::HeaderValue::from_static("1"),
+    );
+    headers.insert(
+        "Sec-Fetch-Dest",
+        reqwest::header::HeaderValue::from_static("document"),
+    );
+    headers.insert(
+        "Sec-Fetch-Mode",
+        reqwest::header::HeaderValue::from_static("navigate"),
+    );
+    headers.insert(
+        "Sec-Fetch-Site",
+        reqwest::header::HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        "Sec-Fetch-User",
+        reqwest::header::HeaderValue::from_static("?1"),
+    );
+    headers.insert(
+        "Cache-Control",
+        reqwest::header::HeaderValue::from_static("max-age=0"),
+    );
+    headers.insert("TE", reqwest::header::HeaderValue::from_static("trailers"));
+    headers.insert(
+        "If-None-Match",
+        reqwest::header::HeaderValue::from_static("W/\"3f002c2f627247e05d2a9c996a55265c\""),
+    );
+
+    headers
+}
+
+struct GeniusHits {
+    hits: serde_json::Value,
+    counter: usize,
+}
+
+struct Hit {
+    song: String,
+    artist: String,
+    lyrics_path: String,
+    song_art_path: String,
+}
+
+impl Iterator for GeniusHits {
+    type Item = serde_json::Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let song = &self.hits[self.counter]["result"]["id"];
+        let lyric_path = &self.hits[self.counter]["result"]["path"];
+        todo!()
+    }
+}
 
 #[derive(Deserialize, Debug)]
 struct GeniusAuthResponse {
@@ -83,7 +222,6 @@ struct SpotifyAuthResponse {
     refresh_token: String,
 }
 
-
 impl Response for SpotifyAuthResponse {
     fn access_token(&self) -> &String {
         &self.access_token
@@ -96,25 +234,26 @@ impl Response for GeniusAuthResponse {
 }
 
 trait Response {
-    
-       fn query(&self, url: &str) -> Result<serde_json::Value,String> {
-            let client = reqwest::blocking::Client::new();
-            let res = client
-                .get(url)
-                .bearer_auth(&self.access_token())
-                .send()
-                .unwrap();
-            match res.status() {
-                reqwest::StatusCode::NO_CONTENT=>{return Err("No song playing".to_string());}
-                _ =>{}
-            }
-            let result = res.text().unwrap();
-            std::fs::write("response.json", &result).expect("lord we fucked up");
-            Ok(serde_json::from_str(&result).unwrap())
-        }
+    fn query(&self, url: &str) -> Result<serde_json::Value, String> {
+        let client = reqwest::blocking::Client::new();
+        let res = client
+            .get(url)
+            .bearer_auth(&self.access_token())
+            .send()
+            .unwrap();
 
-        fn access_token(&self) -> &String;
-    
+        match res.status() {
+            reqwest::StatusCode::NO_CONTENT => {
+                return Err("No song playing".to_string());
+            }
+            _ => {}
+        }
+        let result = res.text().unwrap();
+        std::fs::write("response.json", &result).expect("lord we fucked up");
+        Ok(serde_json::from_str(&result).unwrap())
+    }
+
+    fn access_token(&self) -> &String;
 }
 
 struct Authorizer<T> {
@@ -127,12 +266,13 @@ struct Authorizer<T> {
     phantom: PhantomData<T>,
 }
 
-impl<T> Authorizer <T>
+impl<T> Authorizer<T>
 where
     T: Response + for<'de> Deserialize<'de>,
 {
     pub fn authorize(&self) -> T {
-        let auth_url = self.auth_url();
+        let client = reqwest::blocking::Client::new();
+        let auth_url = self.auth_url(&client);
 
         open::that(auth_url).unwrap(); // open the url in the default browser so the user can sign in
 
@@ -154,10 +294,12 @@ where
             }
         }
         let auth_code = val;
-        self.exchange_for_token(&auth_code)
+        self.exchange_for_token(&client, &auth_code)
     }
 
-    fn auth_url(&self) -> String {
+    /// Sends the request to authorize the application.
+    /// Returns the url for the API's authorization page that prompts the user to authorize the application.
+    fn auth_url(&self, client: &reqwest::blocking::Client) -> String {
         let request_url = reqwest::Url::parse_with_params(
             &self.endpoints[0],
             &[
@@ -170,17 +312,16 @@ where
         .unwrap();
         println!("request: {}", request_url);
 
-        let res = reqwest::blocking::get(request_url).unwrap();
+        let res = client.get(request_url).send().unwrap();
         let url = res.url().to_string();
         url.to_string()
     }
 
-    fn exchange_for_token(&self, auth_code: &str) -> T {
+    fn exchange_for_token(&self, client: &reqwest::blocking::Client, auth_code: &str) -> T {
         let url = &self.endpoints[1];
-        let client = reqwest::blocking::Client::new();
         let params = [
             ("client_id", &self.client_id),
-            ("client_secret",&self.client_secret),
+            ("client_secret", &self.client_secret),
             ("redirect_uri", &self.redirect_uri.to_string()),
             ("code", &auth_code.to_string()),
             ("grant_type", &"authorization_code".to_string()),
@@ -191,10 +332,12 @@ where
     }
 }
 
-impl Authorizer <SpotifyAuthResponse>{
-    fn from_env() -> Self{
-        let client_id = env::var("SPOTIFY_CLIENT_ID").expect("Set the SPOTIFY_CLIENT_ID env variable ");
-        let client_secret=  env::var("SPOTIFY_CLIENT_SECRET").expect("Set the SPOTIFY_CLIENT_SECRET env variable ");
+impl Authorizer<SpotifyAuthResponse> {
+    fn from_env() -> Self {
+        let client_id =
+            env::var("SPOTIFY_CLIENT_ID").expect("Set the SPOTIFY_CLIENT_ID env variable ");
+        let client_secret =
+            env::var("SPOTIFY_CLIENT_SECRET").expect("Set the SPOTIFY_CLIENT_SECRET env variable ");
         Authorizer::<SpotifyAuthResponse> {
             client_id: client_id,
             client_secret: client_secret,
@@ -215,14 +358,16 @@ impl Authorizer <SpotifyAuthResponse>{
     }
 }
 
-impl Authorizer<GeniusAuthResponse>{
-    fn from_env() -> Self{
-        let client_id = env::var("GENIUS_CLIENT_ID").expect("Set the GENIUS_CLIENT_ID env variable ");
-        let client_secret=  env::var("GENIUS_CLIENT_SECRET").expect("Set the GENIUS_CLIENT_SECRET env variable ");
+impl Authorizer<GeniusAuthResponse> {
+    fn from_env() -> Self {
+        let client_id =
+            env::var("GENIUS_CLIENT_ID").expect("Set the GENIUS_CLIENT_ID env variable ");
+        let client_secret =
+            env::var("GENIUS_CLIENT_SECRET").expect("Set the GENIUS_CLIENT_SECRET env variable ");
         Authorizer::<GeniusAuthResponse> {
             client_id,
             client_secret,
-            scope: vec!["me".to_string()],
+            scope: vec![],
             redirect_uri: "https://127.0.0.1:9090".to_string(),
             state: Some("adsa23134a".to_string()),
             endpoints: vec![

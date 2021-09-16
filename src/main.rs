@@ -1,10 +1,7 @@
-use reqwest::header::{
-    HeaderMap, ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, CONNECTION, CONTENT_TYPE, REFERER,
-    UPGRADE_INSECURE_REQUESTS, USER_AGENT,
-};
 use serde::Deserialize;
 use soup::prelude::*;
 use std::{env, error::Error, io, marker::PhantomData, str::FromStr};
+
 fn main() -> Result<(), Box<dyn Error>> {
     let spotify_auth = Authorizer::<SpotifyAuthResponse>::from_env();
     let spotify_auth_response = spotify_auth.authorize();
@@ -13,7 +10,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let genius_auth_response = genius_auth.authorize();
 
     // this cookie is super important. without it genius might return one of two different page layouts for the lyrics which makes scraping much harder. The page layout changes att the cookie value 50.
-    let mut cookie_jar = reqwest::cookie::Jar::default();
+    let cookie_jar = reqwest::cookie::Jar::default();
     cookie_jar.add_cookie_str(
         "_genius_ab_test_cohort=80",
         &"https://genius.com".parse::<reqwest::Url>().unwrap(),
@@ -72,7 +69,7 @@ fn get_lyrics(
     std::fs::write("response_genius.json", &genius_response.to_string())
         .expect("lord we fucked up");
 
-    let song = &genius_response["response"]["hits"][0]["result"]["id"];
+    let _song = &genius_response["response"]["hits"][0]["result"]["id"];
     let lyric_path = &genius_response["response"]["hits"][0]["result"]["path"];
 
     let query_url = reqwest::Url::from_str(&format!(
@@ -82,17 +79,7 @@ fn get_lyrics(
     .unwrap();
     println!("{}", &query_url);
 
-    let mut request = client
-        .get(query_url.clone())
-        .headers(construct_headers())
-        .build()
-        .unwrap();
-
-    #[cfg(feature = "debug")]
-    println!("############## Headers ###################\n{:?}", request);
-    let mut response = client.execute(request).unwrap();
-    //let mut response = client.get(query_url).send().unwrap();
-    //let mut response = reqwest::blocking::get(query_url).unwrap();
+    let response = client.get(query_url).send().unwrap();
 
     #[cfg(feature = "debug")]
     println!(
@@ -110,67 +97,9 @@ fn get_lyrics(
     //tag("div").attr("class", "lyrics")
     let document = soup::Soup::new(res.as_str());
     match document.tag("div").class("lyrics").find() {
-        Some(n) => return Ok(n.text()),
+        Some(n) => Ok(n.text()),
         None => Err(()),
     }
-}
-
-fn construct_headers() -> HeaderMap {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        USER_AGENT,
-        reqwest::header::HeaderValue::from_static("reqwest"),
-    );
-    headers.insert(
-        ACCEPT,
-        reqwest::header::HeaderValue::from_static(
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        ),
-    );
-    headers.insert(
-        ACCEPT_LANGUAGE,
-        reqwest::header::HeaderValue::from_static("en-US,en;q=0.5"),
-    );
-    //headers.insert(ACCEPT_ENCODING, reqwest::header::HeaderValue::from_static("gzip, deflate, br"));
-    headers.insert(
-        REFERER,
-        reqwest::header::HeaderValue::from_static("Referer: https://genius.com/search/embed"),
-    );
-    headers.insert(
-        CONNECTION,
-        reqwest::header::HeaderValue::from_static("keep-alive"),
-    );
-    headers.insert(
-        UPGRADE_INSECURE_REQUESTS,
-        reqwest::header::HeaderValue::from_static("1"),
-    );
-    headers.insert(
-        "Sec-Fetch-Dest",
-        reqwest::header::HeaderValue::from_static("document"),
-    );
-    headers.insert(
-        "Sec-Fetch-Mode",
-        reqwest::header::HeaderValue::from_static("navigate"),
-    );
-    headers.insert(
-        "Sec-Fetch-Site",
-        reqwest::header::HeaderValue::from_static("same-origin"),
-    );
-    headers.insert(
-        "Sec-Fetch-User",
-        reqwest::header::HeaderValue::from_static("?1"),
-    );
-    headers.insert(
-        "Cache-Control",
-        reqwest::header::HeaderValue::from_static("max-age=0"),
-    );
-    headers.insert("TE", reqwest::header::HeaderValue::from_static("trailers"));
-    headers.insert(
-        "If-None-Match",
-        reqwest::header::HeaderValue::from_static("W/\"3f002c2f627247e05d2a9c996a55265c\""),
-    );
-
-    headers
 }
 
 struct GeniusHits {
@@ -314,7 +243,8 @@ where
 
         let res = client.get(request_url).send().unwrap();
         let url = res.url().to_string();
-        url.to_string()
+        url
+        
     }
 
     fn exchange_for_token(&self, client: &reqwest::blocking::Client, auth_code: &str) -> T {

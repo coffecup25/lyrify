@@ -1,6 +1,12 @@
 use serde::Deserialize;
 use soup::prelude::*;
-use std::{env, error::Error, io, marker::PhantomData, str::FromStr};
+use std::{
+    env,
+    error::Error,
+    io::{self, Stderr},
+    marker::PhantomData,
+    str::FromStr,
+};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let spotify_auth = Authorizer::<SpotifyAuthResponse>::from_env();
@@ -45,7 +51,7 @@ fn get_lyrics(
         .query("https://api.spotify.com/v1/me/player/currently-playing")
         .unwrap();
 
-    let song = &spotify_response["item"]["name"];
+    let mut song = spotify_response["item"]["name"].to_string();
     let artist = &spotify_response["item"]["artists"][0]["name"];
 
     #[cfg(feature = "debug")]
@@ -54,9 +60,11 @@ fn get_lyrics(
 
     println!("The currently playing track is: {} by {}", song, artist);
 
+    song = remove_feat(&mut song);
+
     let query_url = reqwest::Url::parse_with_params(
         "https://api.genius.com/search",
-        &[("q", format!("{} {}", song, artist))],
+        &[("q", format!("{} {}", &song, artist))],
     )
     .unwrap();
 
@@ -185,6 +193,39 @@ trait Response {
     fn access_token(&self) -> &String;
 }
 
+#[derive(Clone, Copy)]
+struct Encloser(char, char);
+
+fn remove_feat(name: &mut String) -> String {
+    let enclosers = [Encloser('(', ')'), Encloser('[', ']')];
+    let mut enumerator = name.split_whitespace();
+    let mut new_string = String::with_capacity(name.len());
+
+    while let Some(word) = enumerator.next() {
+        let mut word_iter = word.chars();
+        if let Some(c) = word_iter.next() {
+            // first character of word should be an encloser
+            if let Some(encloser) = enclosers.iter().find(|&x| c == x.0) {
+                if word_iter.as_str().to_lowercase() == "feat." {
+                    while let Some(w) = enumerator.next() {
+                        if w.chars().last().unwrap() == encloser.1 {
+                            break;
+                        }
+                    }
+                } else {
+                    new_string.push_str(word);
+                    new_string.push_str(" ");
+                }
+            } else {
+                new_string.push_str(word);
+                new_string.push_str(" ");
+            }
+        }
+    }
+    new_string = new_string.trim().to_string();
+    new_string
+}
+
 struct Authorizer<T> {
     client_id: String,
     client_secret: String,
@@ -244,7 +285,6 @@ where
         let res = client.get(request_url).send().unwrap();
         let url = res.url().to_string();
         url
-        
     }
 
     fn exchange_for_token(&self, client: &reqwest::blocking::Client, auth_code: &str) -> T {
@@ -306,5 +346,31 @@ impl Authorizer<GeniusAuthResponse> {
             ],
             phantom: PhantomData,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::remove_feat;
+
+    #[test]
+    fn test_remove_feature_in_song_name() {
+        let mut song_name = String::from("Skrawberries (feat. BJ The Chicago Kid)");
+        let cleared_string = remove_feat(&mut song_name);
+        let correct_string = String::from("Skrawberries");
+
+        assert_eq!(correct_string, cleared_string);
+
+        let mut song_name = String::from("CASH MANIAC | CAZH MAN1AC [FEAT. NYYJERYA]");
+        let cleared_string = remove_feat(&mut song_name);
+        let correct_string = String::from("CASH MANIAC | CAZH MAN1AC");
+
+        assert_eq!(correct_string, cleared_string);
+
+        let mut song_name = String::from("Beauty In The Dark (Groove With You)");
+        let cleared_string = remove_feat(&mut song_name);
+        let correct_string = String::from("Beauty In The Dark (Groove With You)");
+
+        assert_eq!(correct_string, cleared_string);
     }
 }

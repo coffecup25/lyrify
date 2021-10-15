@@ -1,7 +1,7 @@
-use std::{env, fs, marker::PhantomData};
+use crate::response::{GeniusAuth, Response, SpotifyAuth};
+use base64;
 use serde::Deserialize;
-
-use crate::response::{GeniusAuth,Response,SpotifyAuth};
+use std::{env, fs, marker::PhantomData};
 
 pub struct Authorizer<T> {
     client_id: String,
@@ -10,7 +10,7 @@ pub struct Authorizer<T> {
     redirect_uri: String,
     state: Option<String>,
     endpoints: Vec<String>,
-    phantom: PhantomData<T>,
+    auth: Option<T>,
 }
 
 impl<T> Authorizer<T>
@@ -81,8 +81,7 @@ where
 }
 
 impl Authorizer<SpotifyAuth> {
-
-    pub fn with_client_id_secret(client_id: String, client_secret: String) -> Self{
+    fn with_client_id_secret(client_id: String, client_secret: String) -> Self {
         Authorizer::<SpotifyAuth> {
             client_id,
             client_secret,
@@ -98,41 +97,79 @@ impl Authorizer<SpotifyAuth> {
                 "https://accounts.spotify.com/authorize".to_string(),
                 "https://accounts.spotify.com/api/token".to_string(),
             ],
-            phantom: PhantomData,
+            auth: None,
         }
     }
-
+    /// Gets the client_id and client_secret from the SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET respectively
     pub fn from_env() -> Self {
         let client_id =
             env::var("SPOTIFY_CLIENT_ID").expect("Set the SPOTIFY_CLIENT_ID env variable ");
         let client_secret =
             env::var("SPOTIFY_CLIENT_SECRET").expect("Set the SPOTIFY_CLIENT_SECRET env variable ");
 
-        println!("id {}  \nsecret{}",client_id,client_secret);
-
-
         Self::with_client_id_secret(client_id, client_secret)
-        
     }
     /// Reads the client id and secret from the supplied file. The json should be structured like this:
     /// SPOTIFY{CLIENT_ID:<>, CLIENT_SECRET: <>}
-    pub fn from_json_file(file_path: &String) -> Self{
-        let mut config_file = fs::File::open(file_path).unwrap();
-        let config_json: serde_json::Value = serde_json::from_reader(config_file).expect("config file couldn't be parsed as json");
-        let spotify_json = config_json.get("SPOTIFY").expect("No spotify object in the file");
+    pub fn from_json_file(file_path: &String) -> SpotifyAuth {
+        let config_file = fs::read_to_string(file_path).unwrap();
+        let mut config_json: serde_json::Value =
+            serde_json::from_str(&config_file).expect("config file couldn't be parsed as json");
+        let mut spotify_json = config_json
+            .get("SPOTIFY")
+            .expect("No spotify object in the file");
 
-        let client_id=spotify_json.get("CLIENT_ID").expect("Couldn't find CLIENT_ID attribute in the file");
-        let client_secret=spotify_json.get("CLIENT_SECRET").expect("Couldn't find CLIENT_SECRET attribute in the file");
+        let client_id = spotify_json
+            .get("CLIENT_ID")
+            .expect("Couldn't find CLIENT_ID attribute in the file")
+            .to_string()
+            .replace('"', "");
+        let client_secret = spotify_json
+            .get("CLIENT_SECRET")
+            .expect("Couldn't find CLIENT_SECRET attribute in the file")
+            .to_string()
+            .replace('"', "");
 
-        println!("id {}  \nsecret{}",client_id.to_string(),client_secret.to_string());
+        let authorizer = Self::with_client_id_secret(client_id.clone(), client_secret.clone());
 
-        Self::with_client_id_secret(client_id.to_string().replace('"', ""), client_secret.to_string().replace('"', ""))
+        if let Some(refresh_token) = spotify_json.get("REFRESH_TOKEN") {
+            let client = reqwest::blocking::Client::new();
+
+            //Requesting for a new access token using the refresh token.
+            let base64_encoded = base64::encode(format! {"{}:{}",client_id,client_secret});
+            let refresh_token = refresh_token.to_string().replace('"', "");
+
+            let body = reqwest::blocking::Body::from(
+                format! {"grant_type=refresh_token&refresh_token={}",refresh_token.to_string()
+                .replace('"', "")},
+            );
+
+            let response = client
+                .post(&authorizer.endpoints[1])
+                .header("Content-type", "application/x-www-form-urlencoded")
+                .header("Authorization", format! {"Basic {}",base64_encoded})
+                .body(body)
+                .send()
+                .unwrap();
+
+            let mut res_json: serde_json::Value = serde_json::from_reader(response).unwrap();
+            res_json["refresh_token"] = refresh_token.into();
+
+            let auth = serde_json::from_value(res_json).unwrap();
+
+            return auth;
+        } else {
+            let auth = authorizer.authorize();
+            config_json["SPOTIFY"]["REFRESH_TOKEN"] =
+                serde_json::to_value(auth.refresh_token()).unwrap();
+            fs::write(file_path, config_json.to_string()).unwrap();
+            return auth;
+        }
     }
 }
 
 impl Authorizer<GeniusAuth> {
-
-    fn with_client_id_secret(client_id: String, client_secret: String) -> Self{
+    fn with_client_id_secret(client_id: String, client_secret: String) -> Self {
         Authorizer::<GeniusAuth> {
             client_id,
             client_secret,
@@ -143,7 +180,7 @@ impl Authorizer<GeniusAuth> {
                 "https://api.genius.com/oauth/authorize".to_string(),
                 "https://api.genius.com/oauth/token".to_string(),
             ],
-            phantom: PhantomData,
+            auth: None,
         }
     }
 
@@ -155,16 +192,26 @@ impl Authorizer<GeniusAuth> {
         Self::with_client_id_secret(client_id, client_secret)
     }
 
-     /// Reads the client id and secret from the supplied file. The json should be structured like this:
+    /// Reads the client id and secret from the supplied file. The json should be structured like this:
     /// GENIUS{CLIENT_ID:<>, CLIENT_SECRET: <>}
-    pub fn from_json_file(file_path: &String) -> Self{
+    pub fn from_json_file(file_path: &String) -> Self {
         let mut config_file = fs::File::open(file_path).unwrap();
-        let config_json: serde_json::Value = serde_json::from_reader(config_file).expect("config file couldn't be parsed as json");
-        let genius_json = config_json.get("GENIUS").expect("No GENIUS object in the file");
+        let config_json: serde_json::Value =
+            serde_json::from_reader(config_file).expect("config file couldn't be parsed as json");
+        let genius_json = config_json
+            .get("GENIUS")
+            .expect("No GENIUS object in the file");
 
-        let client_id=genius_json.get("CLIENT_ID").expect("Couldn't find CLIENT_ID attribute in the file");
-        let client_secret=genius_json.get("CLIENT_SECRET").expect("Couldn't find CLIENT_SECRET attribute in the file");
+        let client_id = genius_json
+            .get("CLIENT_ID")
+            .expect("Couldn't find CLIENT_ID attribute in the file");
+        let client_secret = genius_json
+            .get("CLIENT_SECRET")
+            .expect("Couldn't find CLIENT_SECRET attribute in the file");
 
-        Self::with_client_id_secret(client_id.to_string().replace('"', ""), client_secret.to_string().replace('"', ""))
+        Self::with_client_id_secret(
+            client_id.to_string().replace('"', ""),
+            client_secret.to_string().replace('"', ""),
+        )
     }
 }

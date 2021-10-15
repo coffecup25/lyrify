@@ -27,6 +27,11 @@ pub struct SpotifyAuth {
     refresh_token: String,
 }
 
+impl SpotifyAuth {
+    pub fn refresh_token(&self) -> &String {
+        &self.refresh_token
+    }
+}
 
 impl Response for SpotifyAuth {
     fn access_token(&self) -> &String {
@@ -40,7 +45,11 @@ impl Response for GeniusAuth {
 }
 
 pub trait Response {
-    fn query(&self, url: &str,client:  &reqwest::blocking::Client) -> Result<serde_json::Value, String> {
+    fn query(
+        &self,
+        url: &str,
+        client: &reqwest::blocking::Client,
+    ) -> Result<serde_json::Value, String> {
         let res = client
             .get(url)
             .bearer_auth(&self.access_token())

@@ -2,16 +2,13 @@ mod authorizer;
 mod response;
 
 use authorizer::Authorizer;
-use serde_json::json;
+
+use response::{GeniusAuth, Response, SpotifyAuth};
 use soup::prelude::*;
-use std::{env, error::Error, fs, io::{self, Read, Stderr}, marker::PhantomData, str::FromStr};
-use response::{GeniusAuth, Response,SpotifyAuth};
-
-
+use std::{error::Error, io, str::FromStr};
 
 fn main() -> Result<(), Box<dyn Error>> {
-
-    let (spotify_auth,genius_auth)=setup();
+    let (spotify_auth, genius_auth) = setup();
 
     /* We don't access anything within the user scopes so we don't need to authorize the app for the user
     let genius_auth = Authorizer::<GeniusAuthResponse>::from_env();
@@ -45,25 +42,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn setup() -> (SpotifyAuth,GeniusAuth){
-    
-    let file_path= String::from("./config.json");
-    let authorizer= Authorizer::<SpotifyAuth>::from_json_file(&file_path);
+fn setup() -> (SpotifyAuth, GeniusAuth) {
+    let file_path = String::from("./config.json");
+    let spotify_auth = Authorizer::<SpotifyAuth>::from_json_file(&file_path);
     //let authorizer= Authorizer::<SpotifyAuth>::from_env();
 
-    let spotify_auth=authorizer.authorize();
+    let authorizer = Authorizer::<GeniusAuth>::from_json_file(&file_path);
 
-    let authorizer= Authorizer::<GeniusAuth>::from_json_file(&file_path);
-
-    let genius_auth=authorizer.authorize();
+    let genius_auth = authorizer.authorize();
     // if let Some(refresh_token) = spotify_config.get("REFRESH_TOKEN"){
-        
+
     // }else{
     //     let spotify_auth = Authorizer::<SpotifyAuth>::from_env();
     //     let spotify_auth_response = spotify_auth.authorize();
-    // } 
-    
-    (spotify_auth,genius_auth)
+    // }
+
+    (spotify_auth, genius_auth)
 }
 
 fn get_lyrics(
@@ -72,7 +66,10 @@ fn get_lyrics(
     genius_auth: &GeniusAuth,
 ) -> Result<String, ()> {
     let spotify_response = spotify_auth
-        .query("https://api.spotify.com/v1/me/player/currently-playing",client)
+        .query(
+            "https://api.spotify.com/v1/me/player/currently-playing",
+            client,
+        )
         .unwrap();
 
     let mut song = spotify_response["item"]["name"].to_string();
@@ -92,7 +89,7 @@ fn get_lyrics(
     )
     .unwrap();
 
-    let genius_response = match genius_auth.query(&query_url.to_string(),client) {
+    let genius_response = match genius_auth.query(&query_url.to_string(), client) {
         Ok(json_result) => json_result,
         Err(s) => panic!("{}", s),
     };
@@ -133,7 +130,6 @@ fn get_lyrics(
         None => Err(()),
     }
 }
-
 
 struct GeniusHits {
     hits: serde_json::Value,
@@ -189,7 +185,6 @@ fn remove_feat(name: &mut String) -> String {
     new_string = new_string.trim().to_string();
     new_string
 }
-
 
 #[cfg(test)]
 mod tests {

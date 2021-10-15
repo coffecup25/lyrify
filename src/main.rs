@@ -1,19 +1,22 @@
-use serde::Deserialize;
+mod authorizer;
+mod response;
+
+use authorizer::Authorizer;
+use serde_json::json;
 use soup::prelude::*;
-use std::{
-    env,
-    error::Error,
-    io::{self, Stderr},
-    marker::PhantomData,
-    str::FromStr,
-};
+use std::{env, error::Error, fs, io::{self, Read, Stderr}, marker::PhantomData, str::FromStr};
+use response::{GeniusAuth, Response,SpotifyAuth};
+
+
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let spotify_auth = Authorizer::<SpotifyAuthResponse>::from_env();
-    let spotify_auth_response = spotify_auth.authorize();
 
+    let (spotify_auth,genius_auth)=setup();
+
+    /* We don't access anything within the user scopes so we don't need to authorize the app for the user
     let genius_auth = Authorizer::<GeniusAuthResponse>::from_env();
     let genius_auth_response = genius_auth.authorize();
+     */
 
     // this cookie is super important. without it genius might return one of two different page layouts for the lyrics which makes scraping much harder. The page layout changes att the cookie value 50.
     let cookie_jar = reqwest::cookie::Jar::default();
@@ -33,7 +36,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         println!("Hit enter to get lyrics");
         input.read_line(&mut buf).unwrap();
-        match get_lyrics(&client, &spotify_auth_response, &genius_auth_response) {
+        match get_lyrics(&client, &spotify_auth, &genius_auth) {
             Ok(lyrics) => println!("###########################\n{}\n", lyrics.trim_end()),
             Err(_) => println!("Couldn't find lyrics"),
         }
@@ -42,13 +45,34 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn setup() -> (SpotifyAuth,GeniusAuth){
+    
+    let file_path= String::from("./config.json");
+    let authorizer= Authorizer::<SpotifyAuth>::from_json_file(&file_path);
+    //let authorizer= Authorizer::<SpotifyAuth>::from_env();
+
+    let spotify_auth=authorizer.authorize();
+
+    let authorizer= Authorizer::<GeniusAuth>::from_json_file(&file_path);
+
+    let genius_auth=authorizer.authorize();
+    // if let Some(refresh_token) = spotify_config.get("REFRESH_TOKEN"){
+        
+    // }else{
+    //     let spotify_auth = Authorizer::<SpotifyAuth>::from_env();
+    //     let spotify_auth_response = spotify_auth.authorize();
+    // } 
+    
+    (spotify_auth,genius_auth)
+}
+
 fn get_lyrics(
     client: &reqwest::blocking::Client,
-    spotify_auth: &SpotifyAuthResponse,
-    genius_auth: &GeniusAuthResponse,
+    spotify_auth: &SpotifyAuth,
+    genius_auth: &GeniusAuth,
 ) -> Result<String, ()> {
     let spotify_response = spotify_auth
-        .query("https://api.spotify.com/v1/me/player/currently-playing")
+        .query("https://api.spotify.com/v1/me/player/currently-playing",client)
         .unwrap();
 
     let mut song = spotify_response["item"]["name"].to_string();
@@ -68,7 +92,7 @@ fn get_lyrics(
     )
     .unwrap();
 
-    let genius_response = match genius_auth.query(&query_url.to_string()) {
+    let genius_response = match genius_auth.query(&query_url.to_string(),client) {
         Ok(json_result) => json_result,
         Err(s) => panic!("{}", s),
     };
@@ -110,6 +134,7 @@ fn get_lyrics(
     }
 }
 
+
 struct GeniusHits {
     hits: serde_json::Value,
     counter: usize,
@@ -130,67 +155,6 @@ impl Iterator for GeniusHits {
         let lyric_path = &self.hits[self.counter]["result"]["path"];
         todo!()
     }
-}
-
-#[derive(Deserialize, Debug)]
-struct GeniusAuthResponse {
-    access_token: String,
-}
-
-#[derive(Deserialize, Debug)]
-struct SpotifyAuthResponse {
-    //taken from https://developer.spotify.com/documentation/general/guides/authorization-guide/
-    ///An access token that can be provided in subsequent calls, for example to Spotify Web API services.
-    access_token: String,
-
-    /// How the access token may be used: always “Bearer”.
-    token_type: String,
-
-    /// A space-separated list of scopes which have been granted for this access_token
-    scope: String,
-
-    /// The time period (in seconds) for which the access token is valid.
-    expires_in: usize,
-
-    ///A token that can be sent to the Spotify Accounts service in place of an authorization code.
-    //(When the access code expires, send a POST request to the Accounts service /api/token endpoint
-    ///but use this code in place of an authorization code. A new access token will be returned.
-    // A new refresh token might be returned too.)
-    refresh_token: String,
-}
-
-impl Response for SpotifyAuthResponse {
-    fn access_token(&self) -> &String {
-        &self.access_token
-    }
-}
-impl Response for GeniusAuthResponse {
-    fn access_token(&self) -> &String {
-        &self.access_token
-    }
-}
-
-trait Response {
-    fn query(&self, url: &str) -> Result<serde_json::Value, String> {
-        let client = reqwest::blocking::Client::new();
-        let res = client
-            .get(url)
-            .bearer_auth(&self.access_token())
-            .send()
-            .unwrap();
-
-        match res.status() {
-            reqwest::StatusCode::NO_CONTENT => {
-                return Err("No song playing".to_string());
-            }
-            _ => {}
-        }
-        let result = res.text().unwrap();
-        std::fs::write("response.json", &result).expect("lord we fucked up");
-        Ok(serde_json::from_str(&result).unwrap())
-    }
-
-    fn access_token(&self) -> &String;
 }
 
 #[derive(Clone, Copy)]
@@ -226,128 +190,6 @@ fn remove_feat(name: &mut String) -> String {
     new_string
 }
 
-struct Authorizer<T> {
-    client_id: String,
-    client_secret: String,
-    scope: Vec<String>,
-    redirect_uri: String,
-    state: Option<String>,
-    endpoints: Vec<String>,
-    phantom: PhantomData<T>,
-}
-
-impl<T> Authorizer<T>
-where
-    T: Response + for<'de> Deserialize<'de>,
-{
-    pub fn authorize(&self) -> T {
-        let client = reqwest::blocking::Client::new();
-        let auth_url = self.auth_url(&client);
-
-        open::that(auth_url).unwrap(); // open the url in the default browser so the user can sign in
-
-        println!("Paste the url from the browser"); // todo: start server that listens on a local adress instead
-
-        let mut buf = String::new();
-        std::io::stdin().read_line(&mut buf).unwrap();
-
-        let response_url = reqwest::Url::parse(&buf).unwrap();
-        let mut queries = response_url.query_pairs();
-        let (key, val) = queries.next().unwrap();
-        match (*key).as_ref() {
-            "code" => {}
-            "error" => {
-                panic!("{}", val)
-            } // todo: return error instead
-            _ => {
-                panic!("response_url isnt correct")
-            }
-        }
-        let auth_code = val;
-        self.exchange_for_token(&client, &auth_code)
-    }
-
-    /// Sends the request to authorize the application.
-    /// Returns the url for the API's authorization page that prompts the user to authorize the application.
-    fn auth_url(&self, client: &reqwest::blocking::Client) -> String {
-        let request_url = reqwest::Url::parse_with_params(
-            &self.endpoints[0],
-            &[
-                ("response_type", "code"),
-                ("client_id", &self.client_id),
-                ("scope", &self.scope.join(",")),
-                ("redirect_uri", &self.redirect_uri),
-            ],
-        )
-        .unwrap();
-        println!("request: {}", request_url);
-
-        let res = client.get(request_url).send().unwrap();
-        let url = res.url().to_string();
-        url
-    }
-
-    fn exchange_for_token(&self, client: &reqwest::blocking::Client, auth_code: &str) -> T {
-        let url = &self.endpoints[1];
-        let params = [
-            ("client_id", &self.client_id),
-            ("client_secret", &self.client_secret),
-            ("redirect_uri", &self.redirect_uri.to_string()),
-            ("code", &auth_code.to_string()),
-            ("grant_type", &"authorization_code".to_string()),
-        ];
-        let res = client.post(url).form(&params).send().unwrap();
-        let auth_res: T = res.json().unwrap();
-        auth_res
-    }
-}
-
-impl Authorizer<SpotifyAuthResponse> {
-    fn from_env() -> Self {
-        let client_id =
-            env::var("SPOTIFY_CLIENT_ID").expect("Set the SPOTIFY_CLIENT_ID env variable ");
-        let client_secret =
-            env::var("SPOTIFY_CLIENT_SECRET").expect("Set the SPOTIFY_CLIENT_SECRET env variable ");
-        Authorizer::<SpotifyAuthResponse> {
-            client_id: client_id,
-            client_secret: client_secret,
-            scope: vec![
-                "user-read-email".to_string(),
-                "user-read-private".to_string(),
-                "user-read-currently-playing".to_string(),
-                "user-modify-playback-state".to_string(),
-            ],
-            redirect_uri: "http://127.0.0.1:9090".to_string(),
-            state: None,
-            endpoints: vec![
-                "https://accounts.spotify.com/authorize".to_string(),
-                "https://accounts.spotify.com/api/token".to_string(),
-            ],
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl Authorizer<GeniusAuthResponse> {
-    fn from_env() -> Self {
-        let client_id =
-            env::var("GENIUS_CLIENT_ID").expect("Set the GENIUS_CLIENT_ID env variable ");
-        let client_secret =
-            env::var("GENIUS_CLIENT_SECRET").expect("Set the GENIUS_CLIENT_SECRET env variable ");
-        Authorizer::<GeniusAuthResponse> {
-            client_id,
-            client_secret,
-            scope: vec![],
-            redirect_uri: "https://127.0.0.1:9090".to_string(),
-            state: Some("adsa23134a".to_string()),
-            endpoints: vec![
-                "https://api.genius.com/oauth/authorize".to_string(),
-                "https://api.genius.com/oauth/token".to_string(),
-            ],
-            phantom: PhantomData,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

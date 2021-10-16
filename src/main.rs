@@ -47,9 +47,9 @@ fn setup() -> (SpotifyAuth, GeniusAuth) {
     let spotify_auth = Authorizer::<SpotifyAuth>::from_json_file(&file_path);
     //let authorizer= Authorizer::<SpotifyAuth>::from_env();
 
-    let authorizer = Authorizer::<GeniusAuth>::from_json_file(&file_path);
+    let genius_auth = Authorizer::<GeniusAuth>::from_json_file(&file_path);
 
-    let genius_auth = authorizer.authorize();
+    
     // if let Some(refresh_token) = spotify_config.get("REFRESH_TOKEN"){
 
     // }else{

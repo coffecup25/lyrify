@@ -5,6 +5,14 @@ pub struct GeniusAuth {
     access_token: String,
 }
 
+impl GeniusAuth{
+    pub fn from_access_token(access_token: String) -> Self{
+        GeniusAuth{
+            access_token
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct SpotifyAuth {
     //taken from https://developer.spotify.com/documentation/general/guides/authorization-guide/
@@ -25,23 +33,6 @@ pub struct SpotifyAuth {
     ///but use this code in place of an authorization code. A new access token will be returned.
     /// A new refresh token might be returned too.)
     refresh_token: String,
-}
-
-impl SpotifyAuth {
-    pub fn refresh_token(&self) -> &String {
-        &self.refresh_token
-    }
-}
-
-impl Response for SpotifyAuth {
-    fn access_token(&self) -> &String {
-        &self.access_token
-    }
-}
-impl Response for GeniusAuth {
-    fn access_token(&self) -> &String {
-        &self.access_token
-    }
 }
 
 pub trait Response {
@@ -67,4 +58,21 @@ pub trait Response {
         Ok(serde_json::from_str(&result).unwrap())
     }
     fn access_token(&self) -> &String;
+}
+
+impl SpotifyAuth {
+    pub fn refresh_token(&self) -> &String {
+        &self.refresh_token
+    }
+}
+
+impl Response for SpotifyAuth {
+    fn access_token(&self) -> &String {
+        &self.access_token
+    }
+}
+impl Response for GeniusAuth {
+    fn access_token(&self) -> &String {
+        &self.access_token
+    }
 }

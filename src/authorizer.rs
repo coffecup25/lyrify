@@ -17,7 +17,7 @@ impl<T> Authorizer<T>
 where
     T: Response + for<'de> Deserialize<'de>,
 {
-    pub fn authorize(&self) -> T {
+    fn authorize(&self) -> T {
         let client = reqwest::blocking::Client::new();
         let auth_url = self.auth_url(&client);
 
@@ -152,19 +152,19 @@ impl Authorizer<SpotifyAuth> {
                 .send()
                 .unwrap();
 
-            let mut res_json: serde_json::Value = serde_json::from_reader(response).unwrap();
-            res_json["refresh_token"] = refresh_token.into();
+            if response.status().is_success() {
+                let mut res_json: serde_json::Value = serde_json::from_reader(response).unwrap();
+                res_json["refresh_token"] = refresh_token.into();
 
-            let auth = serde_json::from_value(res_json).unwrap();
-
-            return auth;
-        } else {
-            let auth = authorizer.authorize();
-            config_json["SPOTIFY"]["REFRESH_TOKEN"] =
-                serde_json::to_value(auth.refresh_token()).unwrap();
-            fs::write(file_path, config_json.to_string()).unwrap();
-            return auth;
+                let auth = serde_json::from_value(res_json).unwrap();
+                return auth;
+            }
         }
+        let auth = authorizer.authorize();
+        config_json["SPOTIFY"]["REFRESH_TOKEN"] =
+            serde_json::to_value(auth.refresh_token()).unwrap();
+        fs::write(file_path, config_json.to_string()).unwrap();
+        return auth;
     }
 }
 
@@ -194,7 +194,7 @@ impl Authorizer<GeniusAuth> {
 
     /// Reads the client id and secret from the supplied file. The json should be structured like this:
     /// GENIUS{CLIENT_ID:<>, CLIENT_SECRET: <>}
-    pub fn from_json_file(file_path: &String) -> Self {
+    pub fn from_json_file(file_path: &String) -> GeniusAuth {
         let mut config_file = fs::File::open(file_path).unwrap();
         let config_json: serde_json::Value =
             serde_json::from_reader(config_file).expect("config file couldn't be parsed as json");
@@ -208,10 +208,12 @@ impl Authorizer<GeniusAuth> {
         let client_secret = genius_json
             .get("CLIENT_SECRET")
             .expect("Couldn't find CLIENT_SECRET attribute in the file");
+        let access_token = genius_json
+            .get("ACCESS_TOKEN")
+            .expect("Couldn't find ACCESS_TOKEN attribute in the file").to_string().replace('"', "");
 
-        Self::with_client_id_secret(
-            client_id.to_string().replace('"', ""),
-            client_secret.to_string().replace('"', ""),
-        )
+        let genius_auth = GeniusAuth::from_access_token(access_token);
+        genius_auth
+
     }
 }

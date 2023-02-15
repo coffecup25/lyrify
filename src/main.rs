@@ -7,13 +7,8 @@ use response::{GeniusAuth, Response, SpotifyAuth};
 use soup::prelude::*;
 use std::{error::Error, io, str::FromStr};
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main(){
     let (spotify_auth, genius_auth) = setup();
-
-    /* We don't access anything within the user scopes so we don't need to authorize the app for the user
-    let genius_auth = Authorizer::<GeniusAuthResponse>::from_env();
-    let genius_auth_response = genius_auth.authorize();
-     */
 
     // this cookie is super important. without it genius might return one of two different page layouts for the lyrics which makes scraping much harder. The page layout changes att the cookie value 50.
     let cookie_jar = reqwest::cookie::Jar::default();
@@ -34,12 +29,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Hit enter to get lyrics");
         input.read_line(&mut buf).unwrap();
         match get_lyrics(&client, &spotify_auth, &genius_auth) {
-            Ok(lyrics) => println!("###########################\n{}\n", lyrics.trim_end()),
+            Ok(lyrics) => println!("#################################################################################\n{}\n\n", lyrics.trim()),
             Err(_) => println!("Couldn't find lyrics"),
         }
     }
-
-    Ok(())
 }
 
 fn setup() -> (SpotifyAuth, GeniusAuth) {
@@ -49,7 +42,6 @@ fn setup() -> (SpotifyAuth, GeniusAuth) {
 
     let genius_auth = Authorizer::<GeniusAuth>::from_json_file(&file_path);
 
-    
     // if let Some(refresh_token) = spotify_config.get("REFRESH_TOKEN"){
 
     // }else{
@@ -73,21 +65,24 @@ fn get_lyrics(
         .unwrap();
 
     let mut song = spotify_response["item"]["name"].to_string();
-    let artist = &spotify_response["item"]["artists"][0]["name"];
+    let spotify_artist = &spotify_response["item"]["artists"][0]["name"];
 
     #[cfg(feature = "debug")]
     std::fs::write("response_spotify.json", &spotify_response.to_string())
         .expect("lord we fucked up");
 
-    println!("The currently playing track is: {} by {}", song, artist);
+    println!("The currently playing track is: {} by {}", song, spotify_artist);
 
     song = remove_feat(&mut song);
 
     let query_url = reqwest::Url::parse_with_params(
         "https://api.genius.com/search",
-        &[("q", format!("{} {}", &song, artist))],
+        &[("q", format!("{} {}", &song, spotify_artist))],
     )
     .unwrap();
+
+    #[cfg(feature="debug")]
+    println!("genius query url: {}",query_url);
 
     let genius_response = match genius_auth.query(&query_url.to_string(), client) {
         Ok(json_result) => json_result,
@@ -98,9 +93,22 @@ fn get_lyrics(
     std::fs::write("response_genius.json", &genius_response.to_string())
         .expect("lord we fucked up");
 
-    let _song = &genius_response["response"]["hits"][0]["result"]["id"];
-    let lyric_path = &genius_response["response"]["hits"][0]["result"]["path"];
 
+    let mut song_id = &genius_response["response"]["hits"][0]["result"]["id"]; // ugly hack. Todo fix error handling if we dont find correct artist
+    let mut lyric_path = &genius_response["response"]["hits"][0]["result"]["path"];
+
+    // let i =0;
+    // while let Some(entry) = &genius_response["response"]["hits"].get(i){
+
+    //     let genius_artist= entry["result"]["primary_artist"]["name"];
+    //     if genius_artist.to_string().to_lowercase() == spotify_artist.to_string().to_lowercase(){
+            
+    //     }
+
+    //     song_id = &entry["result"]["id"];
+    //     lyric_path = &genius_response["response"]["hits"][0]["result"]["path"];
+    // }
+  
     let query_url = reqwest::Url::from_str(&format!(
         "https://genius.com{}",
         lyric_path.as_str().unwrap()
@@ -174,11 +182,11 @@ fn remove_feat(name: &mut String) -> String {
                     }
                 } else {
                     new_string.push_str(word);
-                    new_string.push_str(" ");
+                    new_string.push(' ');
                 }
             } else {
                 new_string.push_str(word);
-                new_string.push_str(" ");
+                new_string.push(' ');
             }
         }
     }

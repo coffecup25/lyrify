@@ -5,11 +5,9 @@ pub struct GeniusAuth {
     access_token: String,
 }
 
-impl GeniusAuth{
-    pub fn from_access_token(access_token: String) -> Self{
-        GeniusAuth{
-            access_token
-        }
+impl GeniusAuth {
+    pub fn from_access_token(access_token: String) -> Self {
+        GeniusAuth { access_token }
     }
 }
 
@@ -35,6 +33,35 @@ pub struct SpotifyAuth {
     refresh_token: String,
 }
 
+pub struct SpotifyClient{
+    auth: SpotifyAuth
+}
+
+struct SpotifyQuery<'a>{
+    client: &'a SpotifyClient
+}
+
+
+impl SpotifyClient{
+    pub fn get_currently_playing_song(&self, client: &reqwest::blocking::Client){
+        let spotify_response = self.auth
+        .query(
+            "https://api.spotify.com/v1/me/player/currently-playing",
+            client,
+        )
+        .unwrap();
+
+        let mut song = spotify_response["item"]["name"].to_string();
+        let spotify_artist = &spotify_response["item"]["artists"][0]["name"];
+        
+    }
+    fn user(&self){
+
+    }
+}
+
+
+
 pub trait Response {
     fn query(
         &self,
@@ -51,7 +78,7 @@ pub trait Response {
             reqwest::StatusCode::NO_CONTENT => {
                 return Err("No song playing".to_string());
             }
-            _ => {}
+            _ =>{}
         }
         let result = res.text().unwrap();
         std::fs::write("response.json", &result).expect("lord we fucked up");

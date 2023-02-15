@@ -6,6 +6,7 @@ use authorizer::Authorizer;
 use response::{GeniusAuth, Response, SpotifyAuth};
 use soup::prelude::*;
 use std::{error::Error, io, str::FromStr};
+use html5ever::rcdom;
 
 fn main() {
     let (spotify_auth, genius_auth) = setup();
@@ -97,6 +98,7 @@ fn get_lyrics(
         genius_hit.unwrap().lyric_path
     ))
     .unwrap();
+
     println!("{}", &query_url);
     let response = client.get(query_url).send().unwrap();
 
@@ -112,13 +114,36 @@ fn get_lyrics(
     std::fs::write("response_final.html", &res.as_bytes()).expect("lord we fucked up");
 
     let document = soup::Soup::new(res.as_str());
-    match document
+    extract_lyrics(document)
+}
+
+fn extract_lyrics(document: soup::Soup) -> Result<String, ()> {
+    let root_node = match document
         .tag("div")
         .class("Lyrics__Container-sc-1ynbvzw-6")
         .find()
     {
-        Some(n) => Ok(n.text()),
-        None => Err(()),
+        Some(node) => node,
+        None => return Err(()),
+    };
+
+    let node = root_node.get_node();
+    let mut result = vec![];
+    extract_text(node, &mut result);
+    Ok(result.join("\n"))
+    
+}
+
+fn extract_text(node: &rcdom::Node, result: &mut Vec<String>) {
+    match node.data {
+        rcdom::NodeData::Text {
+            ref contents, ..
+        } => result.push(contents.borrow().to_string()),
+        _ => (),
+    }
+    let children = node.children.borrow();
+    for child in children.iter() {
+        extract_text(child, result);
     }
 }
 

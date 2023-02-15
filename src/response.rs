@@ -15,7 +15,6 @@ impl GeniusAuth {
         url: &str,
         client: &reqwest::blocking::Client,
     ) -> Result<GeniusHits, String> {
-
         let json_res = self.send_request(url, client)?;
         let hits = json_res["response"]["hits"]
             .as_array()

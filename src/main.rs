@@ -117,11 +117,11 @@ fn get_lyrics(
     println!("{}", &query_url);
 
     let response = client.get(query_url).send().unwrap();
-
+   
     #[cfg(feature = "debug")]
     println!(
-        "############# Response #############\n {:?}",
-        response.headers()
+        "############# Response #############\n {:?}\n",
+        response.headers(),
     );
 
     let res = response.text().unwrap();
@@ -133,7 +133,7 @@ fn get_lyrics(
 
     //tag("div").attr("class", "lyrics")
     let document = soup::Soup::new(res.as_str());
-    match document.tag("div").class("lyrics").find() {
+    match document.tag("div").class("Lyrics__Container-sc-1ynbvzw-6").find() {
         Some(n) => Ok(n.text()),
         None => Err(()),
     }

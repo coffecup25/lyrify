@@ -7,7 +7,7 @@ use response::{GeniusAuth, Response, SpotifyAuth};
 use soup::prelude::*;
 use std::{error::Error, io, str::FromStr};
 
-fn main(){
+fn main() {
     let (spotify_auth, genius_auth) = setup();
 
     // this cookie is super important. without it genius might return one of two different page layouts for the lyrics which makes scraping much harder. The page layout changes att the cookie value 50.
@@ -38,16 +38,7 @@ fn main(){
 fn setup() -> (SpotifyAuth, GeniusAuth) {
     let file_path = String::from("./config.json");
     let spotify_auth = Authorizer::<SpotifyAuth>::from_json_file(&file_path);
-    //let authorizer= Authorizer::<SpotifyAuth>::from_env();
-
     let genius_auth = Authorizer::<GeniusAuth>::from_json_file(&file_path);
-
-    // if let Some(refresh_token) = spotify_config.get("REFRESH_TOKEN"){
-
-    // }else{
-    //     let spotify_auth = Authorizer::<SpotifyAuth>::from_env();
-    //     let spotify_auth_response = spotify_auth.authorize();
-    // }
 
     (spotify_auth, genius_auth)
 }
@@ -64,60 +55,51 @@ fn get_lyrics(
         )
         .unwrap();
 
-    let mut song = spotify_response["item"]["name"].to_string();
-    let spotify_artist = &spotify_response["item"]["artists"][0]["name"];
+    let mut song = spotify_response.title;
+    let spotify_artist = &spotify_response.artist;
 
-    #[cfg(feature = "debug")]
-    std::fs::write("response_spotify.json", &spotify_response.to_string())
-        .expect("lord we fucked up");
-
-    println!("The currently playing track is: {} by {}", song, spotify_artist);
+    println!(
+        "The currently playing track is: {} by {}",
+        song, spotify_artist
+    );
 
     song = remove_feat(&mut song);
 
-    let query_url = reqwest::Url::parse_with_params(
+    let mut query_url = reqwest::Url::parse_with_params(
         "https://api.genius.com/search",
         &[("q", format!("{} {}", &song, spotify_artist))],
     )
     .unwrap();
 
-    #[cfg(feature="debug")]
-    println!("genius query url: {}",query_url);
+    #[cfg(feature = "debug")]
+    println!("genius query url: {}", query_url);
 
-    let genius_response = match genius_auth.query(&query_url.to_string(), client) {
+    let mut genius_response = match genius_auth.query(&query_url.to_string(), client) {
         Ok(json_result) => json_result,
         Err(s) => panic!("{}", s),
     };
 
-    #[cfg(feature = "debug")]
-    std::fs::write("response_genius.json", &genius_response.to_string())
-        .expect("lord we fucked up");
+    let mut genius_hit = None;
+    while let Some(entry) = genius_response.next() {
+        if entry.artist == spotify_response.artist {
+            genius_hit = Some(entry);
+            break;
+        }
+    }
 
+    if genius_hit.is_none() {
+        println!("found no hits for the artist");
+        return Err(());
+    }
 
-    let mut song_id = &genius_response["response"]["hits"][0]["result"]["id"]; // ugly hack. Todo fix error handling if we dont find correct artist
-    let mut lyric_path = &genius_response["response"]["hits"][0]["result"]["path"];
-
-    // let i =0;
-    // while let Some(entry) = &genius_response["response"]["hits"].get(i){
-
-    //     let genius_artist= entry["result"]["primary_artist"]["name"];
-    //     if genius_artist.to_string().to_lowercase() == spotify_artist.to_string().to_lowercase(){
-            
-    //     }
-
-    //     song_id = &entry["result"]["id"];
-    //     lyric_path = &genius_response["response"]["hits"][0]["result"]["path"];
-    // }
-  
-    let query_url = reqwest::Url::from_str(&format!(
+    query_url = reqwest::Url::from_str(&format!(
         "https://genius.com{}",
-        lyric_path.as_str().unwrap()
+        genius_hit.unwrap().lyric_path
     ))
     .unwrap();
     println!("{}", &query_url);
-
     let response = client.get(query_url).send().unwrap();
-   
+
     #[cfg(feature = "debug")]
     println!(
         "############# Response #############\n {:?}\n",
@@ -126,38 +108,17 @@ fn get_lyrics(
 
     let res = response.text().unwrap();
 
-    //println!("\n\n{:#?}",response.text().unwrap());
-
     #[cfg(feature = "debug")]
     std::fs::write("response_final.html", &res.as_bytes()).expect("lord we fucked up");
 
-    //tag("div").attr("class", "lyrics")
     let document = soup::Soup::new(res.as_str());
-    match document.tag("div").class("Lyrics__Container-sc-1ynbvzw-6").find() {
+    match document
+        .tag("div")
+        .class("Lyrics__Container-sc-1ynbvzw-6")
+        .find()
+    {
         Some(n) => Ok(n.text()),
         None => Err(()),
-    }
-}
-
-struct GeniusHits {
-    hits: serde_json::Value,
-    counter: usize,
-}
-
-struct Hit {
-    song: String,
-    artist: String,
-    lyrics_path: String,
-    song_art_path: String,
-}
-
-impl Iterator for GeniusHits {
-    type Item = serde_json::Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let song = &self.hits[self.counter]["result"]["id"];
-        let lyric_path = &self.hits[self.counter]["result"]["path"];
-        todo!()
     }
 }
 

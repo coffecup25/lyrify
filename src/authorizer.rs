@@ -115,7 +115,7 @@ impl Authorizer<SpotifyAuth> {
         let config_file = fs::read_to_string(file_path).unwrap();
         let mut config_json: serde_json::Value =
             serde_json::from_str(&config_file).expect("config file couldn't be parsed as json");
-            
+
         let mut spotify_json = config_json
             .get("SPOTIFY")
             .expect("No spotify object in the file");
@@ -217,6 +217,5 @@ impl Authorizer<GeniusAuth> {
             .replace('"', "");
 
         GeniusAuth::from_access_token(access_token)
-       
     }
 }
